@@ -67,6 +67,33 @@ string determineExtension(string filepath, string filename) {
 	}
 }
 
+///Packs a file into an lz77wii compressed byte array
+///\nCredit for algorithm goes to Nintenlord & ItsAllAboutTheCode at https://github.com/ItsAllAboutTheCode/lz77_compressor/blob/master/lz77Type10.cpp
+ubyte[] packLZ77wii(File *file, FileHeader *fileheader) {
+	//Setup data arrays
+	ubyte[] output;
+	ubyte[] fileData;
+	auto fileLength = file.size();
+	fileData.length = fileLength;
+	//Create Header for compressed file(Size of File and compression type in 4 bytes)
+	output ~= pack!`<I`(fileLength<<8 | 0x10);
+	//Read entirety of file into our ubyte array
+	file.rawRead(fileData);
+	//Prepare our compressed byte chunk, largest possible size is 8 2-byte references
+	ubyte[] compressedBytes;
+	compressedBytes.length = 16;
+	//I assume this is how you want to loop since the pointer funnies don't really work here
+	while (output.length < fileLength) {
+		///Used to determine how many bytes need to be compressed
+		ubyte compressedNum = 0;
+		ubyte[] ptrBytes = compressedBytes;
+		for (int i = 0; i < 8; i++) {
+			
+		}
+	}
+	return output;
+}
+
 //Credit for Algorithm goes to Marcan at https://wiibrew.org/wiki/LZ77
 ///Extract a file, decompressing it in the process
 void extractLZ77wii(File *archive, FileHeader *fileheader, uint offset, string filename) {
@@ -155,8 +182,8 @@ int main(string[] args)
 {
 	//Setup Arguments
 	if (args.length == 1) {
-        writeln("No arguments given. Please provide model file.");
-        return 1;
+		writeln("No arguments given. Please provide archive/folder.");
+		return 1;
 	}
 	string filename = "archive";
 	auto const argInfo = getopt(args, "file", &filename);
