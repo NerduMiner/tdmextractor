@@ -12,6 +12,12 @@ import std.stdio;
 import std.string;
 import vibe.data.json; //Used to write and read from the JSON helper file
 
+///Stores archive header information
+struct ArchiveHeader {
+	///Version reported by the archive
+	ArchiveVersion ver;
+}
+
 ///Stores file header information read from the archive
 struct FileHeader {
 	///Index of the file in the original archive
@@ -34,6 +40,14 @@ enum KnownHeaders : ubyte[]
 	ZIP = [80, 75, 3, 4],
 	DAR = [100, 97, 114, 99],
 	NFC = [3, 0, 0, 0] //No clue what this is supposed to be but quickbms recognizes it
+}
+
+///Used to determine which game the archive belongs to
+enum ArchiveVersion : uint
+{
+	TDM12 = 5,
+	TDM3 = 7,
+	TDMF = 10
 }
 
 ///Grabs from a list of possible extensions and then renames them according to header data
@@ -251,23 +265,28 @@ int repackArchive(string filename) {
 	//Start by opening the json file inside the folder so we can determine how to go about repacking the folder
 	string offset = strip(filename, "_"); //Used whenever something cant be read at compile time
 	string jsonFilename = filename ~ "/" ~ strip(filename, "_") ~ ".json";
+	string jsonArchver = filename ~ "/" ~ "version.json"; 
 	ubyte[] compressedData;
 	ubyte[] headerData;
-	const auto jsonData = readText(jsonFilename);
-	const Json info = parseJsonString(jsonData);
+	const string jsonData = readText(jsonFilename);
+	const string jsonVer = readText(jsonArchver);
+	const Json fileinfo = parseJsonString(jsonData);
+	const Json archinfo = parseJsonString(jsonVer);
 	FileHeader[] fileheaders;
-	fileheaders.length = info.length;
+	ArchiveHeader archiveheader = deserializeJson!ArchiveHeader(archinfo);
+	writeln("Archive Version: ", archiveheader.ver);
+	fileheaders.length = fileinfo.length;
 	//Prepare output file
 	File outputArchive = File("output.bin", "wb");
 	//Append Archive header
-	headerData ~= pack!`<I`(7); //Archive version(only TDM3 for now)
+	headerData ~= pack!`<I`(archiveheader.ver); //Archive version(only TDM1-3 supported for now)
 	headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
 	headerData ~= pack!`<I`(fileheaders.length); //Amount of files
 	//Prepare some variables before hand to assist with archive creation
 	ulong maxHeaderLength = headerData.length + (28 * fileheaders.length); //Used when calculating file offset
-	for (int i = 0; i < info.length; i++) {
+	for (int i = 0; i < fileinfo.length; i++) {
 		//Read the corresponding json information
-		const auto current = info[i];
+		const auto current = fileinfo[i];
 		fileheaders[i] = deserializeJson!FileHeader(current);
 		File infile = File(filename ~ "/" ~ fileheaders[i].fileID ~ "." ~ fileheaders[i].extension, "rb");
 		writeln("File Index: ", fileheaders[i].fileIndex);
@@ -291,7 +310,11 @@ int repackArchive(string filename) {
 				headerData ~= pack!`<I`(maxHeaderLength + compressedData.length);
 			}
 			headerData ~= pack!`<I`(6); //Compression Mode
-			headerData ~= pack!`<I`(1); //Padding
+			if (archiveheader.ver == ArchiveVersion.TDM3) {
+				headerData ~= pack!`<I`(1); //TDM3 Padding
+			} else {
+				headerData ~= pack!`<I`(0xFFFFFFFF); //TDM1-2 Padding
+			}
 			headerData ~= pack!`<I`(infile.size); //Uncompressed Length
 			compressedData ~= buffer;
 		} else {
@@ -305,7 +328,11 @@ int repackArchive(string filename) {
 				headerData ~= pack!`<I`(maxHeaderLength + compressedData.length);
 			}
 			headerData ~= pack!`<I`(1); //Compression Mode
-			headerData ~= pack!`<I`(1); //Padding
+			if (archiveheader.ver == ArchiveVersion.TDM3) {
+				headerData ~= pack!`<I`(1); //TDM3 Padding
+			} else {
+				headerData ~= pack!`<I`(4_294_967_295); //TDM1-2 Padding
+			}
 			headerData ~= pack!`<I`(infile.size() * 3); //Not sure how this is calculated but we can approximate
 			infile.rawRead(rawDat);
 			compressedData ~= rawDat;
@@ -321,7 +348,7 @@ int repackArchive(string filename) {
 int extractArchive(File archive) {
 //Begin reading the header portion of the file
 	while (!archive.eof()) {
-		//Determine format of header, TDM3 Is always 7
+		//Determine format of header, TDM3 is always 7, TDM1 is always 5
 		ubyte[] data;
 		data.length = 12;
 		archive.rawRead(data);
@@ -336,9 +363,16 @@ int extractArchive(File archive) {
 		const int fileAmount = reader.read!uint();
 		writeln("Number of Files: ", fileAmount);
 		reader.clear();
-		//Create JSON file to place extra data into
+		//Create JSON files to place extra data into
 		File jsonfile = File(folderName ~ "/" ~ format!"%X"(archOffset) ~ ".json", "w");
+		File jsonarch = File(folderName ~ "/" ~ "version.json", "w");
 		FileHeader[] fileheaders;
+		ArchiveHeader archiveheader;
+		if (archVersion == ArchiveVersion.TDM3) {
+			archiveheader.ver = ArchiveVersion.TDM3;
+		} else {
+			archiveheader.ver = ArchiveVersion.TDM12;
+		}
 		fileheaders.length = fileAmount;
 		//Determine information about file headers
 		for (int i = 0; i < fileAmount; i++) {
@@ -391,7 +425,9 @@ int extractArchive(File archive) {
 		}
 		//Add elements to JSON file as array
 		jsonfile.writeln(fileheaders.serializeToPrettyJson);
+		jsonarch.writeln(archiveheader.serializeToPrettyJson);
 		jsonfile.close();
+		jsonarch.close();
 		break;
 	}
 	archive.close();
