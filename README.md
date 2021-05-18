@@ -28,6 +28,7 @@ tdmextractor requires a D compiler(DMD is recommended), downloads can be found a
 I have not yet established a consistent code style for this project. Keep this in mind if you decide to submit a pull request with features. I aim to keep with the D style, however https://dlang.org/dstyle.html
 <br/>If you are submitting an issue, please provide as much relevant information as possible(what archive you were working with, what game in the series, steps to reproduce, relevant system information, etc.).
 # Credits
+- Unknown Author of the Denpa Men 3 Archive Extraction quickbms script https://aluigi.altervista.org/bms/denpamen3.bms
 - Robert Pasiński for the pack-d binary i/o library https://code.dlang.org/packages/pack-d
 - Marcan on WiiBrew for LZ77wii decompression algorithm https://wiibrew.org/wiki/LZ77
 - Barubary on Github for LZ77wii compression algorithm https://github.com/Barubary/dsdecmp
