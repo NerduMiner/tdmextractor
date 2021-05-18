@@ -4,7 +4,7 @@
 	],
 	"copyright": "Copyright © 2021, NerduMiner",
 	"dependencies": {
-		"asdf": "~>0.7.8"
+		"vibe-d:data": "~>0.9.3"
 	},
 	"description": "An Extractor/Repacker aimed at the archive format found in The Denpa Men series of games on the Nintendo 3DS.",
 	"license": "AGPL-3.0",

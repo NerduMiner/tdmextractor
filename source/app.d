@@ -1,11 +1,16 @@
-import std.stdio; //Used for general functions
-import std.file; //Used for handling archive files
-import std.array; //Used for array manipulation
+import binary.common; //Needed for some pack-d functions
+import binary.pack; //For formatting data into specific types
+import binary.reader; //For parsing data from raw byte arrays
+import lz77helper; //Has helper functions for lz77wii compression
+import std.algorithm;
+import std.array;
+import std.conv;
+import std.file;
 import std.format : format;
-import std.getopt; //Used for parsing CLI arguments
-import binary.reader; //Used for reading from archives
-import binary.common; //cause D being mean
-import asdf; //For handling the json file
+import std.getopt;
+import std.stdio;
+import std.string;
+import vibe.data.json; //Used to write and read from the JSON helper file
 
 ///Stores file header information read from the archive
 struct FileHeader {
@@ -34,8 +39,6 @@ enum KnownHeaders : ubyte[]
 ///Grabs from a list of possible extensions and then renames them according to header data
 ///\nReturns a string that denotes the extension
 string determineExtension(string filepath, string filename) {
-	//writeln("Filename: ", filename);
-	//writeln("Filepath: ", filepath);
 	try {
 		//Attempt to read header of file, and rename extension accordingly
 		auto data = cast(ubyte[]) read(filepath, 4);
@@ -67,31 +70,79 @@ string determineExtension(string filepath, string filename) {
 	}
 }
 
-///Packs a file into an lz77wii compressed byte array
-///\nCredit for algorithm goes to Nintenlord & ItsAllAboutTheCode at https://github.com/ItsAllAboutTheCode/lz77_compressor/blob/master/lz77Type10.cpp
-ubyte[] packLZ77wii(File *file, FileHeader *fileheader) {
-	//Setup data arrays
-	ubyte[] output;
-	ubyte[] fileData;
-	auto fileLength = file.size();
-	fileData.length = fileLength;
-	//Create Header for compressed file(Size of File and compression type in 4 bytes)
-	output ~= pack!`<I`(fileLength<<8 | 0x10);
-	//Read entirety of file into our ubyte array
-	file.rawRead(fileData);
-	//Prepare our compressed byte chunk, largest possible size is 8 2-byte references
-	ubyte[] compressedBytes;
-	compressedBytes.length = 16;
-	//I assume this is how you want to loop since the pointer funnies don't really work here
-	while (output.length < fileLength) {
-		///Used to determine how many bytes need to be compressed
-		ubyte compressedNum = 0;
-		ubyte[] ptrBytes = compressedBytes;
-		for (int i = 0; i < 8; i++) {
-			
+///Alternate version of lz77 compression found here https://github.com/Barubary/dsdecmp/blob/master/CSharp/DSDecmp/Formats/Nitro/LZ10.cs
+ubyte[] packLZ77wiialt(File *infile) {
+	try {
+		//Setup data arrays
+		ubyte[] output;
+		auto fileLength = infile.size();
+		//File cannot be larger than 16.77MB
+		if (fileLength > 16_777_215) {
+			throw new Exception("File cannot be more than 16.77MB large.");
 		}
+		ubyte[] fileData = new ubyte[fileLength];
+		//Create Header for compressed file(Size of File and compression type in 4 bytes)
+		output ~= pack!`<I`(fileLength<<8 | 0x10);
+		//Read entirety of file into fileData
+		infile.rawRead(fileData);
+		int compressedLength = 4;
+		ubyte* instart = cast(ubyte*)fileData;
+		//Output needs to be buffered due to flag byte
+		//This algorithm only buffers 8 bytes at a time
+		ubyte[] outbuffer = new ubyte[8*2 + 1];
+		outbuffer[0] = 0;
+		int bufferLength = 1, bufferedBlocks = 0;
+		int readBytes = 0;
+		while (readBytes < fileLength) {
+			//Reset Buffer
+			if (bufferedBlocks == 8) {
+				output ~= outbuffer[0..bufferLength];
+				compressedLength += bufferLength;
+				outbuffer[0] = 0;
+				bufferLength = 1;
+				bufferedBlocks = 0;
+			}
+
+			//Determine whether data is compressed or raw
+			int disp;
+			const int oldLength = min(readBytes, 0x1000);
+			int length = getOccurenceLength(cast(ubyte*)instart + readBytes, cast(int)min(fileLength - readBytes, 0x12), 
+				instart + readBytes - oldLength, oldLength, &disp);
+			//Length < 3 means next byte is raw data
+			if (length < 3) {
+				outbuffer[bufferLength++] = *(instart + (readBytes++));
+			} else {
+				//We need to create a reference, next [length] bytes will be compressed into 2 byte reference
+				readBytes += length;
+				//Mark next block as compressed
+				outbuffer[0] |= cast(ubyte)(1 << (7 - bufferedBlocks));
+				//Encode data length and offset
+				outbuffer[bufferLength] = cast(ubyte)(((length - 3) << 4) & 0xF0);
+				//Prevent integer underflow
+				if (disp == 0) {
+					writeln("Preventing overflow");
+					outbuffer[bufferLength] |= cast(ubyte)((disp >> 8) & 0x0F);
+					bufferLength++;
+					outbuffer[bufferLength] = cast(ubyte)(disp & 0xFF);
+					bufferLength++;
+				} else {
+					outbuffer[bufferLength] |= cast(ubyte)(((disp - 1) >> 8) & 0x0F);
+					bufferLength++;
+					outbuffer[bufferLength] = cast(ubyte)((disp - 1) & 0xFF);
+					bufferLength++;
+				}
+			}
+			bufferedBlocks++;
+		}
+		//Copy remaining blocks to the output
+		if (bufferedBlocks > 0) {
+			output ~= outbuffer;
+			compressedLength += bufferLength;
+		}
+		return output;
+	} catch (Exception e) {
+		throw new Exception("Compression Failed.");
 	}
-	return output;
 }
 
 //Credit for Algorithm goes to Marcan at https://wiibrew.org/wiki/LZ77
@@ -105,10 +156,8 @@ void extractLZ77wii(File *archive, FileHeader *fileheader, uint offset, string f
 	auto reader = binaryReader(data);
 	const uint header = reader.read!uint();
 	//Funny bit magic to read a byte and 3 bytes from uint
-	const auto uncompressedSize = header>>8; //1 Byte
-	const auto compressionType = header>>4 & 0xF; //3 Bytes
-	//writeln("File Uncompressed Size: ", uncompressedSize);
-	//writeln("File Compression Type: ", compressionType);
+	const auto uncompressedSize = header >> 8; //1 Byte
+	const auto compressionType = header >> 4 & 0xF; //3 Bytes
 	//Make sure the compression type is right
 	if (compressionType != 1) {
 		throw new Exception("Invalid Compression Type");
@@ -130,10 +179,8 @@ void extractLZ77wii(File *archive, FileHeader *fileheader, uint offset, string f
 		archive.rawRead(data);
 		reader.source(data);
 		auto flags = reader.read!ubyte();
-		//writeln("Chunk Flag: ", format!"%x"(flags));
 		//Iterate through chunk using bitflag to determine reference or raw
 		for (int i = 0; i < 8; i++) {
-			//writeln("Current Flag Bit: ", flags & 0x80);
 			//Is current bit set to 1?
 			if (flags & 0x80) {
 				//Read Reference
@@ -147,13 +194,10 @@ void extractLZ77wii(File *archive, FileHeader *fileheader, uint offset, string f
 				reader.byteOrder = ByteOrder.LittleEndian;
 				//Determine length of data
 				const auto num = 3 + ((info>>12)&0xF);
-				//Uhhhhhhhh
+				//TODO: Consider what to do with this since this is unused
 				const auto disp = info & 0xFFF;
 				//Determine offset in uncompressed data
-				//writeln("Current Data Length: ", uncompressedData.length);
-				//writeln("Info: ", format!"%x"(info));
 				auto ptr = uncompressedData.length - (info & 0xFFF) - 1;
-				//writeln("Uncompressed Offset: ", ptr);
 				for (int k = 0; k < num; k++) {
 					uncompressedData ~= uncompressedData[ptr];
 					ptr += 1;
@@ -185,11 +229,97 @@ int main(string[] args)
 		writeln("No arguments given. Please provide archive/folder.");
 		return 1;
 	}
-	string filename = "archive";
-	auto const argInfo = getopt(args, "file", &filename);
-	//Begin by opening the archive file
-	File archive = File(filename, "rb");
-	//Begin reading the header portion of the file
+	string filename = "filename";
+	int workSuccess;
+	auto const argInfo = getopt(args, "input", &filename);
+	//Determine whether we are dealing with a file or a folder
+	if (filename.isFile()) {
+		//Argument is file, so begin by opening the archive file
+		writeln("Extracting Archive...");
+		File archive = File(filename, "rb");
+		workSuccess = extractArchive(archive);
+	} else {
+		//Argument is directory, so begin packing directory
+		writeln("Repacking Folder...");
+		workSuccess = repackArchive(filename);
+	}
+	return workSuccess;
+}
+
+///Takes a folder and repacks it into the proprietary archive format
+int repackArchive(string filename) {
+	//Start by opening the json file inside the folder so we can determine how to go about repacking the folder
+	string offset = strip(filename, "_"); //Used whenever something cant be read at compile time
+	string jsonFilename = filename ~ "/" ~ strip(filename, "_") ~ ".json";
+	ubyte[] compressedData;
+	ubyte[] headerData;
+	const auto jsonData = readText(jsonFilename);
+	const Json info = parseJsonString(jsonData);
+	FileHeader[] fileheaders;
+	fileheaders.length = info.length;
+	//Prepare output file
+	File outputArchive = File("output.bin", "wb");
+	//Append Archive header
+	headerData ~= pack!`<I`(7); //Archive version(only TDM3 for now)
+	headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
+	headerData ~= pack!`<I`(fileheaders.length); //Amount of files
+	//Prepare some variables before hand to assist with archive creation
+	ulong maxHeaderLength = headerData.length + (28 * fileheaders.length); //Used when calculating file offset
+	for (int i = 0; i < info.length; i++) {
+		//Read the corresponding json information
+		const auto current = info[i];
+		fileheaders[i] = deserializeJson!FileHeader(current);
+		File infile = File(filename ~ "/" ~ fileheaders[i].fileID ~ "." ~ fileheaders[i].extension, "rb");
+		writeln("File Index: ", fileheaders[i].fileIndex);
+		writeln("File ID: ", fileheaders[i].fileID);
+		writeln("File unk: ", fileheaders[i].unk);
+		writeln("File extension: ", fileheaders[i].extension);
+		writeln("Is file compressed?: ", fileheaders[i].isCompressed);
+		//Pack header into headerData
+		headerData ~= pack!`<I`(parse!ulong(fileheaders[i].fileID, 16)); //File ID?
+		headerData ~= pack!`<I`(fileheaders[i].unk); //Unk value
+		//The following data requires the filesizes to be known beforehand
+		if (fileheaders[i].isCompressed) {
+			//Pack corrseponding file into compressedData
+			writeln("Compressing file...");
+			ubyte[] buffer = packLZ77wiialt(&infile);
+			writeln("Compression Complete!");
+			headerData ~= pack!`<I`(buffer.length); //Compressed length
+			if (i == 0) { //Calculate File Offset in archive
+				headerData ~= pack!`<I`(maxHeaderLength);
+			} else {
+				headerData ~= pack!`<I`(maxHeaderLength + compressedData.length);
+			}
+			headerData ~= pack!`<I`(6); //Compression Mode
+			headerData ~= pack!`<I`(1); //Padding
+			headerData ~= pack!`<I`(infile.size); //Uncompressed Length
+			compressedData ~= buffer;
+		} else {
+			//File is not compressed, so just put the whole thing in there
+			ubyte[] rawDat;
+			rawDat.length = infile.size();
+			headerData ~= pack!`<I`(infile.size()); //Compressed length(but holds uncompressed size)
+			if (i == 0) { //Calculate File Offset in archive
+				headerData ~= pack!`<I`(maxHeaderLength);
+			} else {
+				headerData ~= pack!`<I`(maxHeaderLength + compressedData.length);
+			}
+			headerData ~= pack!`<I`(1); //Compression Mode
+			headerData ~= pack!`<I`(1); //Padding
+			headerData ~= pack!`<I`(infile.size() * 3); //Not sure how this is calculated but we can approximate
+			infile.rawRead(rawDat);
+			compressedData ~= rawDat;
+		}
+		infile.close();
+	}
+	outputArchive.rawWrite(headerData);
+	outputArchive.rawWrite(compressedData);
+	return 0;
+}
+
+///Takes an archive and extracts the files out of it, along with creating a helper JSON file for repacking
+int extractArchive(File archive) {
+//Begin reading the header portion of the file
 	while (!archive.eof()) {
 		//Determine format of header, TDM3 Is always 7
 		ubyte[] data;
@@ -199,15 +329,15 @@ int main(string[] args)
 		auto archVersion = reader.read!uint();
 		auto archOffset = reader.read!uint();
 		writeln("Archive Version: ", archVersion);
-		writeln("Archive Offset: ", format!"%x"(archOffset));
+		writeln("Archive Offset: ", format!"%X"(archOffset));
 		//Create Folder to place extracted files into
-		auto folderName = format!"%x"(archOffset) ~ "_";
+		auto folderName = format!"%X"(archOffset) ~ "_";
 		mkdir(folderName);
 		const int fileAmount = reader.read!uint();
 		writeln("Number of Files: ", fileAmount);
 		reader.clear();
 		//Create JSON file to place extra data into
-		File jsonfile = File(folderName ~ "/" ~ format!"%x"(archOffset) ~ ".json", "w");
+		File jsonfile = File(folderName ~ "/" ~ format!"%X"(archOffset) ~ ".json", "w");
 		FileHeader[] fileheaders;
 		fileheaders.length = fileAmount;
 		//Determine information about file headers
@@ -219,15 +349,15 @@ int main(string[] args)
 			writeln("====FILE ", i + 1, " INFORMATION====");
 			//Read file information while also applying them to our struct
 			auto fileID = reader.read!uint();
-			writeln("Unknown 1: ", format!"%x"(fileID));
+			writeln("Unknown 1: ", format!"%X"(fileID));
 			fileheaders[i].fileIndex = i + 1;
-			fileheaders[i].fileID = format!"%x"(fileID);
+			fileheaders[i].fileID = format!"%X"(fileID);
 			fileheaders[i].unk = reader.read!uint();
 			writeln("Unknown 2: ", fileheaders[i].unk);
 			auto compressedSize = reader.read!uint();
 			writeln("Compressed Size: ", compressedSize);
 			auto fileOffset = reader.read!uint();
-			writeln("File ", i, " Offset: ", format!"%x"(fileOffset));
+			writeln("File ", i, " Offset: ", format!"%X"(fileOffset));
 			const auto compressionMode = reader.read!uint();
 			const bool isCompressed = (compressionMode == 6) ? true : false;
 			fileheaders[i].isCompressed = isCompressed;
@@ -237,7 +367,7 @@ int main(string[] args)
 			auto uncompressedSize = reader.read!uint();
 			writeln("Uncompressed Size: ", uncompressedSize);
 			reader.clear();
-			auto filePath = folderName ~ "/" ~ format!"%x"(fileID);
+			auto filePath = folderName ~ "/" ~ format!"%X"(fileID);
 			//Begin Extracting file
 			if (isCompressed) {
 				//Decompress and Extract File Data
@@ -251,7 +381,6 @@ int main(string[] args)
 				ubyte[] fileData;
 				//Uncompressed size is in compressedSize
 				fileData.length = compressedSize;
-				//writeln("File Size: ", fileData.length);
 				archive.rawRead(fileData);
 				File uncomFile = File(filePath ~ ".bin", "wb");
 				uncomFile.rawWrite(fileData);
@@ -259,9 +388,9 @@ int main(string[] args)
 				fileheaders[i].extension = determineExtension(filePath ~ ".bin", filePath);
 				archive.seek(origOffset);
 			}
-			//Add element to JSON file
-			jsonfile.writeln(fileheaders[i].serializeToJsonPretty());
 		}
+		//Add elements to JSON file as array
+		jsonfile.writeln(fileheaders.serializeToPrettyJson);
 		jsonfile.close();
 		break;
 	}
