@@ -8,6 +8,7 @@ import std.conv;
 import std.file;
 import std.format : format;
 import std.getopt;
+import std.path;
 import std.stdio;
 import std.string;
 import vibe.data.json; //Used to write and read from the JSON helper file
@@ -30,6 +31,8 @@ struct FileHeader {
 	string extension;
 	///True = LZ77wii compressed\nFalse = Uncompressed
 	bool isCompressed;
+	///TDMF Exclusive: Related to compression mode(1 for uncompressed, 2 for lz77wii compressed)
+	uint compressedUnk = 0;
 }
 
 ///Used to determine extension of file, values refer to specific hex bytes in the header
@@ -39,7 +42,11 @@ enum KnownHeaders : ubyte[]
 	CGF = [67, 71, 70, 88],
 	ZIP = [80, 75, 3, 4],
 	DAR = [100, 97, 114, 99],
-	NFC = [3, 0, 0, 0] //No clue what this is supposed to be but quickbms recognizes it
+	SAR = [83, 65, 82, 67],
+	NFC = [3, 0, 0, 0], //No clue what this is supposed to be but quickbms recognizes it
+	SDB = [2, 0, 0, 0],
+	VAP = [1, 0, 0, 0]  
+
 }
 
 ///Used to determine which game the archive belongs to
@@ -172,10 +179,6 @@ void extractLZ77wii(File *archive, FileHeader *fileheader, uint offset, string f
 	//Funny bit magic to read a byte and 3 bytes from uint
 	const auto uncompressedSize = header >> 8; //1 Byte
 	const auto compressionType = header >> 4 & 0xF; //3 Bytes
-	//Make sure the compression type is right
-	if (compressionType != 1) {
-		throw new Exception("Invalid Compression Type");
-	}
 	//Now we actually create the file and begin the decompression process
 	File extract = File (filename ~ ".bin", "wb");
 	ubyte[] uncompressedData;
@@ -278,10 +281,21 @@ int repackArchive(string filename) {
 	fileheaders.length = fileinfo.length;
 	//Prepare output file
 	File outputArchive = File("output.bin", "wb");
-	//Append Archive header
-	headerData ~= pack!`<I`(archiveheader.ver); //Archive version(only TDM1-3 supported for now)
-	headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
-	headerData ~= pack!`<I`(fileheaders.length); //Amount of files
+	//Archive header needs to be written differently if we are packing a TDMF archive
+	if (archiveheader.ver != ArchiveVersion.TDMF) {
+		//Append Archive header
+		headerData ~= pack!`<I`(archiveheader.ver); //Archive version
+		headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
+		headerData ~= pack!`<I`(fileheaders.length); //Amount of files
+	} else {
+		//Append Archive header
+		headerData ~= pack!`<I`(archiveheader.ver); //Archive version
+		headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
+		headerData ~= pack!`<I`(0); //Unknown 1
+		headerData ~= pack!`<I`(65_536); //Unknown 2
+		headerData ~= pack!`<I`(fileheaders.length); //Amount of files
+		headerData ~= pack!`<I`(0); //Unknown 3
+	}
 	//Prepare some variables before hand to assist with archive creation
 	ulong maxHeaderLength = headerData.length + (28 * fileheaders.length); //Used when calculating file offset
 	for (int i = 0; i < fileinfo.length; i++) {
@@ -312,8 +326,10 @@ int repackArchive(string filename) {
 			headerData ~= pack!`<I`(6); //Compression Mode
 			if (archiveheader.ver == ArchiveVersion.TDM3) {
 				headerData ~= pack!`<I`(1); //TDM3 Padding
-			} else {
+			} else if (archiveheader.ver == ArchiveVersion.TDM12) {
 				headerData ~= pack!`<I`(0xFFFFFFFF); //TDM1-2 Padding
+			} else {
+				headerData ~= pack!`<I`(2); //TDMF Unknown
 			}
 			headerData ~= pack!`<I`(infile.size); //Uncompressed Length
 			compressedData ~= buffer;
@@ -330,10 +346,12 @@ int repackArchive(string filename) {
 			headerData ~= pack!`<I`(1); //Compression Mode
 			if (archiveheader.ver == ArchiveVersion.TDM3) {
 				headerData ~= pack!`<I`(1); //TDM3 Padding
+			} else if (archiveheader.ver == ArchiveVersion.TDM12) {
+				headerData ~= pack!`<I`(0xFFFFFFFF); //TDM1-2 Padding
 			} else {
-				headerData ~= pack!`<I`(4_294_967_295); //TDM1-2 Padding
+				headerData ~= pack!`<I`(1); //TDMF Unknown
 			}
-			headerData ~= pack!`<I`(infile.size() * 3); //Not sure how this is calculated but we can approximate
+			headerData ~= pack!`<I`(infile.size()); //Not sure how the original value is calculated and approximations do little
 			infile.rawRead(rawDat);
 			compressedData ~= rawDat;
 		}
@@ -348,18 +366,33 @@ int repackArchive(string filename) {
 int extractArchive(File archive) {
 //Begin reading the header portion of the file
 	while (!archive.eof()) {
-		//Determine format of header, TDM3 is always 7, TDM1 is always 5
+		//Determine format of header, TDM3 is always 7, TDM1-2 is always 5, TDMF is always 10 
 		ubyte[] data;
 		data.length = 12;
 		archive.rawRead(data);
 		auto reader = binaryReader(data);
 		auto archVersion = reader.read!uint();
+		//TDMF has a marginally different format to its header compared to the main games, thus we will extract in a separate function
+		if (archVersion == ArchiveVersion.TDMF) {
+			writeln("TDMF Archive detected.");
+			extractArchiveTDMF(archive);
+			return 0;
+		}
 		auto archOffset = reader.read!uint();
 		writeln("Archive Version: ", archVersion);
 		writeln("Archive Offset: ", format!"%X"(archOffset));
 		//Create Folder to place extracted files into
 		auto folderName = format!"%X"(archOffset) ~ "_";
-		mkdir(folderName);
+		if (!folderName.exists) {
+			mkdir(folderName);
+		} else {
+			writeln("Folder already exists. Do you wish to overwrite it's contents?[y/n]");
+			stdout.flush;
+			if (startsWith(readln, "n")) {
+				writeln("Permission denied. Exiting program...");
+				return 1;
+			}
+		}
 		const int fileAmount = reader.read!uint();
 		writeln("Number of Files: ", fileAmount);
 		reader.clear();
@@ -432,4 +465,102 @@ int extractArchive(File archive) {
 	}
 	archive.close();
 	return 0;
+}
+
+///Takes a TDMF archive and extracts the files out of it, along with creating a helper JSON file for repacking, near equivalent to extractArchive()
+void extractArchiveTDMF(File archive) {
+	//Finish reading archive header
+	archive.seek(0);
+	while(!archive.eof) {
+		ubyte[] data;
+		data.length = 24;
+		archive.rawRead(data);
+		auto reader = binaryReader(data);
+		reader.read!uint();
+		auto archOffset = reader.read!uint();
+		writeln("Archive Offset: ", format!"%X"(archOffset));
+		//Skip padding
+		reader.read!ulong();
+		//Create Folder to place extracted files into
+		auto folderName = format!"%X"(archOffset) ~ "_";
+		if (!folderName.exists) {
+			mkdir(folderName);
+		} else {
+			writeln("Folder already exists. Do you wish to overwrite it's contents?[y/n]");
+			stdout.flush;
+			if (startsWith(readln, "n")) {
+				writeln("Permission denied. Exiting program...");
+				return;
+			}
+		}
+		const int fileAmount = reader.read!uint();
+		writeln("Number of Files: ", fileAmount);
+		//Skip padding
+		reader.read!uint();
+		reader.clear();
+		//Create JSON files to place extra data into
+		File jsonfile = File(folderName ~ "/" ~ format!"%X"(archOffset) ~ ".json", "w");
+		File jsonarch = File(folderName ~ "/" ~ "version.json", "w");
+		FileHeader[] fileheaders;
+		ArchiveHeader archiveheader;
+		archiveheader.ver = ArchiveVersion.TDMF;
+		fileheaders.length = fileAmount;
+		//Determine information about file headers
+		for (int i = 0; i < fileAmount; i++) {
+			data = [];
+			data.length = 28;
+			archive.rawRead(data);
+			reader.source(data);
+			writeln("====FILE ", i + 1, " INFORMATION====");
+			//Read file information while also applying them to our struct
+			auto fileID = reader.read!uint();
+			writeln("Unknown 1: ", format!"%X"(fileID));
+			fileheaders[i].fileIndex = i + 1;
+			fileheaders[i].fileID = format!"%X"(fileID);
+			fileheaders[i].unk = reader.read!uint();
+			writeln("Unknown 2: ", fileheaders[i].unk);
+			auto compressedSize = reader.read!uint();
+			writeln("Compressed Size: ", compressedSize);
+			auto fileOffset = reader.read!uint();
+			writeln("File ", i, " Offset: ", format!"%X"(fileOffset));
+			const auto compressionMode = reader.read!uint();
+			const bool isCompressed = (compressionMode == 6) ? true : false;
+			fileheaders[i].isCompressed = isCompressed;
+			writeln("Is file compressed? ", isCompressed);
+			//Skip Padding
+			reader.read!uint();
+			auto uncompressedSize = reader.read!uint();
+			writeln("Uncompressed Size: ", uncompressedSize);
+			reader.clear();
+			auto filePath = folderName ~ "/" ~ format!"%X"(fileID);
+			//Begin Extracting file
+			if (isCompressed) {
+				//Decompress and Extract File Data
+				auto origOffset = archive.tell();
+				extractLZ77wii(&archive, &fileheaders[i], fileOffset, filePath);
+				archive.seek(origOffset);
+			} else {
+				//Extract File Data
+				auto origOffset = archive.tell();
+				archive.seek(fileOffset);
+				ubyte[] fileData;
+				//Uncompressed size is in compressedSize
+				fileData.length = compressedSize;
+				archive.rawRead(fileData);
+				File uncomFile = File(filePath ~ ".bin", "wb");
+				uncomFile.rawWrite(fileData);
+				uncomFile.close();
+				fileheaders[i].extension = determineExtension(filePath ~ ".bin", filePath);
+				archive.seek(origOffset);
+			}
+		}
+		//Add elements to JSON file as array
+		jsonfile.writeln(fileheaders.serializeToPrettyJson);
+		jsonarch.writeln(archiveheader.serializeToPrettyJson);
+		jsonfile.close();
+		jsonarch.close();
+		break;
+	}
+	archive.close();
+	return;
 }
