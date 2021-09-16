@@ -1,21 +1,19 @@
 # tdmextractor
 An Archive Extractor &amp; Repacker for "The Denpa Men" series
 <br/>This tool can replace the usage of the existing quickbms script for The Denpa Men 3
-<br/>If you wish to extract archives from the other games, you can download the latest prerelease to do so, but compatibility with all archives is not yet 100%.
+<br/>Compatibility with all archives is not yet 100%, some archives from The Denpa Men 2 have problems with repacking.
 # Current Features
-- Extraction of files from TDM3 archives
-- Repacking to TDM3 version archives
+- Extraction of files from TDM1/TDM2/TDM3/TDMF archives
+- Repacking to TDM1/TDM2/TDM3/TDMF version archives
 # Planned Features
-- Extraction of files from TDM1/TDM2/TDMF archives [Completed in Prerelease]
-- Repacking to TDM1/TDM2/TDMF version archives [Completed in Prerelease]
 - Drag and Drop support for files/folders on Windows(Alternative is the use of batch files and the %1 operator)
 # Usage
 Run the executable in CLI/Terminal. The desired file/folder you wish to handle with the tool needs to be put in the arguments like so:
-<br/>`tdmextractor --input [name of archive/folder]`
+<br/>`tdmextractor [name of archive/folder]`
 <br/>If you input a file, the archive will extract after some time, and a folder with the filename and an underscore will appear in your directory with the files.
-<br/>If you input a folder, the archive will be created after sometime and be named "output.bin", to which you can properly rename the archive for use in mods.
-<br/>If you attempt to extract an archive more than once in the same directory, it will fail because of the existing directory, meaning you will have to rename or delete it to extract again.
-<br/>This issue does not happen with repacking archives.
+<br/>If you input a folder, the archive will be created after sometime and be named "[foldername]_output", to which you can properly rename the archive for use in mods.
+<br/>If you attempt to extract an archive more than once in the same directory, you will be asked to write over existing files, you can choose to deny this and exit the program.
+<br/>Alternatively, you can make use of the 'extract' and 'repack' commands, though with these you must be exact with providing either an archive or a folder.
 # JSON Configuration
 When an archive is extracted, a JSON file is created and placed in the directory with the same name as the folder.  This file contains information from the file header in the archive which is used for archive repacking. Note that these values are currently based off file headers found in The Denpa Men 3 archives.
 - "fileIndex": The index of the file inside the archive, its recommended to not change this value to avoid a game crash
@@ -23,7 +21,7 @@ When an archive is extracted, a JSON file is created and placed in the directory
 - "unk": An unknown value that has an effect on how the file is read ingame, its purpose is unknown but it has important functions so its recommended to not change this value
 - "extension": The extension used by the particular file in the directory, its recommended to not change this value as you might crash in game
 - "isCompressed": Denotes whether or not this file was originally LZ77wii compressed inside the archive, there may be a relation to "unk" so you are welcome to experiment
-- [PRERELEASE ONLY]"compressedUnk": In TDMF, the value after the compression mode can change depending on whether the file is compressed or not, this value is currently a placeholder in case this needs to be accurately recreated
+- "compressedUnk": In TDMF, the value after the compression mode can change depending on whether the file is compressed or not, this value is currently a placeholder in case this needs to be accurately recreated
 # Building
 tdmextractor requires a D compiler(DMD is recommended), downloads can be found at https://dlang.org/.<br/>Once installed, run `dub build` in your CLI/Terminal in the root directory of the repository to compile the project.
 # Contributing
