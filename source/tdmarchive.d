@@ -283,7 +283,17 @@ int repackArchive(string filename) {
 		//Read the corresponding json information
 		//const auto current = fileinfo[i];
 		//fileheaders[i] = deserializeJson!FileHeader(current);
-		File infile = File(filename ~ "/" ~ archInfo.fileHeader[i].fileID ~ "." ~ archInfo.fileHeader[i].extension, "rb");
+		bool fileExists = true;
+		File infile;
+		if (exists(filename ~ "/" ~ archInfo.fileHeader[i].fileID ~ "." ~ archInfo.fileHeader[i].extension))
+		{
+			infile = File(filename ~ "/" ~ archInfo.fileHeader[i].fileID ~ "." ~ archInfo.fileHeader[i].extension, "rb");
+		}
+		else
+		{
+			fileExists = false;
+			writeln("WARNING: File does not exist! Header will still be written");
+		}
 		writeln("File Index: ", archInfo.fileHeader[i].fileIndex);
 		writeln("File ID: ", archInfo.fileHeader[i].fileID);
 		writeln("File unk: ", archInfo.fileHeader[i].unk);
@@ -293,7 +303,7 @@ int repackArchive(string filename) {
 		headerData ~= pack!`<I`(parse!ulong(archInfo.fileHeader[i].fileID, 16)); //File ID?
 		headerData ~= pack!`<I`(archInfo.fileHeader[i].unk); //Unk value
 		//The following data requires the filesizes to be known beforehand
-		if (archInfo.fileHeader[i].isCompressed) {
+		if (archInfo.fileHeader[i].isCompressed && fileExists) {
 			//Pack corrseponding file into compressedData
 			writeln("Compressing file...");
 			ubyte[] buffer = packLZ77wiialt(infile);
@@ -314,7 +324,7 @@ int repackArchive(string filename) {
 			}
 			headerData ~= pack!`<I`(infile.size); //Uncompressed Length
 			compressedData ~= buffer;
-		} else {
+		} else if (fileExists) {
 			//File is not compressed, so just put the whole thing in there
 			ubyte[] rawDat;
 			rawDat.length = infile.size();
@@ -335,6 +345,19 @@ int repackArchive(string filename) {
 			headerData ~= pack!`<I`(infile.size()); //Not sure how the original value is calculated and approximations do little
 			infile.rawRead(rawDat);
 			compressedData ~= rawDat;
+		} else {
+			//File does not exist, but we have to write header data anyways
+			headerData ~= pack!`<I`(0); //Compressed length
+			headerData ~= pack!`<I`(maxHeaderLength + compressedData.length); //Bogus Offset
+			headerData ~= pack!`<I`(6); //Compression Mode
+			if (archInfo.archiveHeader.ver == ArchiveVersion.TDM3) {
+				headerData ~= pack!`<I`(1); //TDM3 Padding
+			} else if (archInfo.archiveHeader.ver == ArchiveVersion.TDM12) {
+				headerData ~= pack!`<I`(0xFFFFFFFF); //TDM1-2 Padding
+			} else {
+				headerData ~= pack!`<I`(2); //TDMF Unknown
+			}
+			headerData ~= pack!`<I`(0); //Uncompressed Length
 		}
 		infile.close();
 	}
@@ -416,6 +439,12 @@ int extractArchive(File archive) {
 			writeln("Uncompressed Size: ", uncompressedSize);
 			reader.clear();
 			auto filePath = folderName ~ "/" ~ format!"%X"(fileID);
+			//HOLD UP! There are entries in TDMF that have file entries that are 0 bytes long, check for that!
+			if (compressedSize == 0)
+			{
+				writeln("FILE IS EMPTY, SKIPPING.");
+				continue;
+			}
 			//Begin Extracting file
 			if (isCompressed) {
 				//Decompress and Extract File Data
@@ -517,6 +546,12 @@ void extractArchiveTDMF(File archive) {
 			writeln("Uncompressed Size: ", uncompressedSize);
 			reader.clear();
 			auto filePath = folderName ~ "/" ~ format!"%X"(fileID);
+			//HOLD UP! There are entries in TDMF that have file entries that are 0 bytes long, check for that!
+			if (compressedSize == 0)
+			{
+				writeln("FILE IS EMPTY, SKIPPING.");
+				continue;
+			}
 			//Begin Extracting file
 			if (isCompressed) {
 				//Decompress and Extract File Data
