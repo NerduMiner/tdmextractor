@@ -11,6 +11,7 @@ import std.format;
 import std.path;
 import std.stdio;
 import std.string;
+import archive.zip; //Used to handle zip files and obtain information about them
 import vibe.data.json; //Used to write and read from the JSON helper file
 ///Stores archive header information
 struct ArchiveHeader {
@@ -296,6 +297,7 @@ int repackArchive(string filename) {
 		}
 		writeln("File Index: ", archInfo.fileHeader[i].fileIndex);
 		writeln("File ID: ", archInfo.fileHeader[i].fileID);
+		auto arch_filename = filename ~ "/" ~ archInfo.fileHeader[i].fileID ~ "." ~ archInfo.fileHeader[i].extension; //This is for zip handling code, but apparently we can only get string properly here?
 		writeln("File unk: ", archInfo.fileHeader[i].unk);
 		writeln("File extension: ", archInfo.fileHeader[i].extension);
 		writeln("Is file compressed?: ", archInfo.fileHeader[i].isCompressed);
@@ -342,7 +344,22 @@ int repackArchive(string filename) {
 			} else {
 				headerData ~= pack!`<I`(1); //TDMF Unknown
 			}
-			headerData ~= pack!`<I`(infile.size()); //Not sure how the original value is calculated and approximations do little
+			//Uncompressed Size of file, for zip files, this equates to the total size of the extracted files
+			if (archInfo.fileHeader[i].extension == "zip")
+			{
+				auto archive = new ZipArchive(read(arch_filename));
+				uint uncompressed_size;
+				foreach(file; archive.files)
+				{
+					uncompressed_size += file.data.length;
+				}
+				headerData ~= pack!`<I`(uncompressed_size);
+				archive = null;
+			}
+			else
+			{
+				headerData ~= pack!`<I`(infile.size()); //Fallback option of just reporting the size of the file
+			}
 			infile.rawRead(rawDat);
 			compressedData ~= rawDat;
 		} else {

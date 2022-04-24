@@ -33,3 +33,4 @@ I have not yet established a consistent code style for this project. Keep this i
 - Marcan on WiiBrew for LZ77wii decompression algorithm https://wiibrew.org/wiki/LZ77
 - Barubary on Github for LZ77wii compression algorithm https://github.com/Barubary/dsdecmp
 - Sönke Ludwig, et al. for vibe-d json library https://code.dlang.org/packages/vibe-d/0.9.3
+- Richard 'rcythr' Laughlin for archive library https://code.dlang.org/packages/archive
