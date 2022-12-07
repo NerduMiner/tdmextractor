@@ -11,12 +11,16 @@ import std.format;
 import std.path;
 import std.stdio;
 import std.string;
+import std.zlib;
 import archive.zip; //Used to handle zip files and obtain information about them
 import vibe.data.json; //Used to write and read from the JSON helper file
+import vibe.data.serialization;
 ///Stores archive header information
 struct ArchiveHeader {
 	///Version reported by the archive
 	ArchiveVersion ver;
+	///TNDM Exclusive: Some random integer
+	@embedNullable uint NDMunk;
 }
 
 ///Stores file header information read from the archive
@@ -33,6 +37,10 @@ struct FileHeader {
 	bool isCompressed;
 	///TDMF Exclusive: Related to compression mode(1 for uncompressed, 2 for lz77wii compressed)
 	uint compressedUnk = 0;
+	//The following are TNDM exclusive
+	@embedNullable uint NDMunk1;
+	@embedNullable uint NDMunk2;
+	@embedNullable uint NDMunk3;
 }
 
 ///A struct containing all info relating to an archive to be outputted into a JSON info file
@@ -60,7 +68,8 @@ enum ArchiveVersion : uint
 {
 	TDM12 = 5,
 	TDM3 = 7,
-	TDMF = 10
+	TDMF = 10,
+	TNDM = 14,
 }
 
 ///Grabs from a list of possible extensions and then renames them according to header data
@@ -264,12 +273,12 @@ int repackArchive(string filename) {
 	//Prepare output file
 	File outputArchive = File(filename ~ "output", "wb");
 	//Archive header needs to be written differently if we are packing a TDMF archive
-	if (archInfo.archiveHeader.ver != ArchiveVersion.TDMF) {
+	if (archInfo.archiveHeader.ver != ArchiveVersion.TNDM) {
 		//Append Archive header
 		headerData ~= pack!`<I`(archInfo.archiveHeader.ver); //Archive version
 		headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
 		headerData ~= pack!`<I`(archInfo.fileHeader.length); //Amount of files
-	} else {
+	} else if (archInfo.archiveHeader.ver == ArchiveVersion.TDMF) {
 		//Append Archive header
 		headerData ~= pack!`<I`(archInfo.archiveHeader.ver); //Archive version
 		headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
@@ -277,6 +286,13 @@ int repackArchive(string filename) {
 		headerData ~= pack!`<I`(65_536); //Unknown 2
 		headerData ~= pack!`<I`(archInfo.fileHeader.length); //Amount of files
 		headerData ~= pack!`<I`(0); //Unknown 3
+	} else {
+		headerData ~= pack!`<I`(archInfo.archiveHeader.ver); //Archive version
+		headerData ~= pack!`<I`(parse!ulong(offset, 16)); //File offset
+		headerData ~= pack!`<I`(0); //Unknown 1
+		headerData ~= pack!`<I`(458_758); //Unknown 2
+		headerData ~= pack!`<I`(archInfo.fileHeader.length); //Amount of files
+		headerData ~= pack!`<I`(archInfo.archiveHeader.NDMunk);
 	}
 	//Prepare some variables before hand to assist with archive creation
 	ulong maxHeaderLength = headerData.length + (28 * archInfo.fileHeader.length); //Used when calculating file offset
@@ -305,10 +321,18 @@ int repackArchive(string filename) {
 		headerData ~= pack!`<I`(parse!ulong(archInfo.fileHeader[i].fileID, 16)); //File ID?
 		headerData ~= pack!`<I`(archInfo.fileHeader[i].unk); //Unk value
 		//The following data requires the filesizes to be known beforehand
-		if (archInfo.fileHeader[i].isCompressed && fileExists) {
+		if ((archInfo.fileHeader[i].isCompressed && fileExists) 
+		|| archInfo.archiveHeader.ver == ArchiveVersion.TNDM) {
 			//Pack corrseponding file into compressedData
 			writeln("Compressing file...");
-			ubyte[] buffer = packLZ77wiialt(infile);
+			ubyte[] buffer;
+			if (archInfo.archiveHeader.ver == ArchiveVersion.TNDM)
+			{
+				auto filebuf = cast(ubyte[]) read(infile.name);
+				buffer = compress(filebuf);
+			} else {
+				buffer = packLZ77wiialt(infile);
+			}
 			writeln("Compression Complete!");
 			headerData ~= pack!`<I`(buffer.length); //Compressed length
 			if (i == 0) { //Calculate File Offset in archive
@@ -393,11 +417,20 @@ int extractArchive(File archive) {
 		archive.rawRead(data);
 		auto reader = binaryReader(data);
 		auto archVersion = reader.read!uint();
-		//TDMF has a marginally different format to its header compared to the main games, thus we will extract in a separate function
-		if (archVersion == ArchiveVersion.TDMF) {
-			writeln("TDMF Archive detected.");
-			extractArchiveTDMF(archive);
-			return 0;
+		writeln(archVersion);
+		//TDMF and TNDM have a marginally different format to its header compared to the main games, thus we will extract in a separate function
+		switch (archVersion)
+		{
+			case ArchiveVersion.TNDM:
+				writeln("TNDM Archive detected.");
+				extractArchiveTNDM(archive);
+				return 0;
+			case ArchiveVersion.TDMF:
+				writeln("TDMF Archive detected.");
+				extractArchiveTDMF(archive);
+				return 0;
+			default:
+				break;
 		}
 		auto archOffset = reader.read!uint();
 		writeln("Archive Version: ", archVersion);
@@ -506,6 +539,7 @@ void extractArchiveTDMF(File archive) {
 		data.length = 24;
 		archive.rawRead(data);
 		auto reader = binaryReader(data);
+		//Skip version, we know what it is already
 		reader.read!uint();
 		auto archOffset = reader.read!uint();
 		writeln("Archive Offset: ", format!"%X"(archOffset));
@@ -575,6 +609,131 @@ void extractArchiveTDMF(File archive) {
 				auto origOffset = archive.tell();
 				extractLZ77wii(archive, fileheaders[i], fileOffset, filePath);
 				fileheaders[i].extension = determineExtension(filePath ~ ".bin", filePath);
+				archive.seek(origOffset);
+			} else {
+				//Extract File Data
+				auto origOffset = archive.tell();
+				archive.seek(fileOffset);
+				ubyte[] fileData;
+				//Uncompressed size is in compressedSize
+				fileData.length = compressedSize;
+				archive.rawRead(fileData);
+				File uncomFile = File(filePath ~ ".bin", "wb");
+				uncomFile.rawWrite(fileData);
+				uncomFile.close();
+				fileheaders[i].extension = determineExtension(filePath ~ ".bin", filePath);
+				writefln("File extension is %s", fileheaders[i].extension);
+				archive.seek(origOffset);
+			}
+		}
+		//Add elements to JSON file as array
+		ArchiveInfo info = ArchiveInfo(fileheaders, archiveheader);
+		jsonfile.writeln(info.serializeToPrettyJson);
+		//jsonfile.writeln(fileheaders.serializeToPrettyJson);
+		//jsonarch.writeln(archiveheader.serializeToPrettyJson);
+		jsonfile.close();
+		//jsonarch.close();
+		break;
+	}
+	archive.close();
+	return;
+}
+
+///Takes a TNDM archive and extracts the files out of it, along with creating a helper JSON file for repacking, near equivalent to extractArchive()
+void extractArchiveTNDM(File archive) {
+	//Finish reading archive header
+	archive.seek(0);
+	while(!archive.eof) {
+		ubyte[] data;
+		data.length = 24;
+		archive.rawRead(data);
+		auto reader = binaryReader(data);
+		reader.read!uint();
+		auto archOffset = reader.read!uint();
+		writeln("Archive Offset: ", format!"%X"(archOffset));
+		//Skip padding
+		reader.read!ulong();
+		//Create Folder to place extracted files into
+		auto folderName = format!"%X"(archOffset) ~ "_";
+		if (!folderName.exists) {
+			mkdir(folderName);
+		} else {
+			writeln("Folder already exists. Do you wish to overwrite it's contents?[y/n]");
+			stdout.flush;
+			if (startsWith(readln, "n")) {
+				writeln("Permission denied. Exiting program...");
+				return;
+			}
+		}
+		const int fileAmount = reader.read!uint();
+		writeln("Number of Files: ", fileAmount);
+		uint unk_data = reader.read!uint();
+		reader.clear();
+		//Create JSON files to place extra data into
+		File jsonfile = File(folderName ~ "/" ~ format!"%X"(archOffset) ~ ".json", "w");
+		//File jsonarch = File(folderName ~ "/" ~ "version.json", "w");
+		FileHeader[] fileheaders;
+		ArchiveHeader archiveheader;
+		archiveheader.ver = ArchiveVersion.TNDM;
+		archiveheader.NDMunk = unk_data;
+		fileheaders.length = fileAmount;
+		//Determine information about file headers
+		for (int i = 0; i < fileAmount; i++) {
+			data = [];
+			data.length = 32;
+			archive.rawRead(data);
+			reader.source(data);
+			writeln("====FILE ", i + 1, " INFORMATION====");
+			//Read file information while also applying them to our struct
+			auto fileID = reader.read!uint();
+			writeln("File ID: ", format!"%X"(fileID));
+			fileheaders[i].fileIndex = i + 1;
+			fileheaders[i].fileID = format!"%X"(fileID);
+			fileheaders[i].unk = reader.read!uint();
+			writeln("Unknown: ", fileheaders[i].unk);
+			auto compressedSize = reader.read!uint();
+			writeln("Compressed Size: ", compressedSize);
+			auto fileOffset = reader.read!uint();
+			writeln("File ", i, " Offset: ", format!"%X"(fileOffset));
+			auto uncompressedSize = reader.read!uint();
+			writeln("Uncompressed Size: ", uncompressedSize);
+			//Get some extra data
+			fileheaders[i].NDMunk1 = reader.read!uint();
+			fileheaders[i].NDMunk2 = reader.read!uint();
+			fileheaders[i].NDMunk3 = reader.read!uint();
+			reader.clear();
+			auto filePath = folderName ~ "/" ~ format!"%X"(fileID);
+			//HOLD UP! There are entries in TDMF that have file entries that are 0 bytes long, check for that!
+			if (compressedSize == 0)
+			{
+				writeln("FILE IS EMPTY, SKIPPING.");
+				continue;
+			}
+			//Begin Extracting file
+			if (true) {
+				//Decompress and Extract File Data
+				auto origOffset = archive.tell();
+				//BEGIN STUPIDITY, Read ENTIRE data into bufffer and uncompress
+				archive.seek(fileOffset);
+				ubyte[] comData;
+				comData.length = compressedSize;
+				archive.rawRead(comData);
+				ubyte[] fileData;
+				//We need to spoof header data
+				fileData ~= 0x1F;
+				fileData ~= 0x8B;
+				fileData ~= 0x08;
+				fileData ~= 0x00;
+				fileData ~= 0x00;
+				fileData ~= 0x00;
+				fileData ~= 0x00;
+				fileData ~= 0x00;
+				fileData = cast(ubyte[]) uncompress(comData, cast(size_t)uncompressedSize, -15);
+				File uncomFile = File(filePath ~ ".bin", "wb");
+				uncomFile.rawWrite(fileData);
+				uncomFile.close();
+				fileheaders[i].extension = determineExtension(filePath ~ ".bin", filePath);
+				writefln("File extension is %s", fileheaders[i].extension);
 				archive.seek(origOffset);
 			} else {
 				//Extract File Data
