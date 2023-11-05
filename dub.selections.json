@@ -1,11 +1,11 @@
 {
 	"fileVersion": 1,
 	"versions": {
-		"archive": "0.7.0",
+		"archive": "0.7.1",
 		"asdf": "0.7.8",
 		"mir-algorithm": "3.10.60",
 		"mir-core": "1.1.69",
 		"stdx-allocator": "2.77.5",
-		"vibe-d": "0.9.3"
+		"vibe-d": "0.9.7"
 	}
 }

@@ -1,7 +1,7 @@
 # tdmextractor
 An Archive Extractor &amp; Repacker for "The Denpa Men" series
 <br/>This tool can replace the usage of the existing quickbms script for The Denpa Men 3
-<br/>Compatibility with all archives is not yet 100%, some archives from The Denpa Men 2 have problems with repacking.
+<br/>Compatibility should be near 100% for archives in all games.
 # Current Features
 - Extraction of files from TDM1/TDM2/TDM3/TDMF archives
 - Repacking to TDM1/TDM2/TDM3/TDMF version archives
@@ -23,7 +23,7 @@ When an archive is extracted, a JSON file is created and placed in the directory
 - "isCompressed": Denotes whether or not this file was originally LZ77wii compressed inside the archive, there may be a relation to "unk" so you are welcome to experiment
 - "compressedUnk": In TDMF, the value after the compression mode can change depending on whether the file is compressed or not, this value is currently a placeholder in case this needs to be accurately recreated
 # Building
-tdmextractor requires a D compiler(DMD is recommended), downloads can be found at https://dlang.org/.<br/>Once installed, run `dub build` in your CLI/Terminal in the root directory of the repository to compile the project.
+tdmextractor requires a D compiler(DMD v2.105.3+ is recommended), downloads can be found at https://dlang.org/.<br/>Once installed, run `dub build` in your CLI/Terminal in the root directory of the repository to compile the project.
 # Contributing
 I have not yet established a consistent code style for this project. Keep this in mind if you decide to submit a pull request with features. I aim to keep with the D style, however https://dlang.org/dstyle.html
 <br/>If you are submitting an issue, please provide as much relevant information as possible(what archive you were working with, what game in the series, steps to reproduce, relevant system information, etc.).
